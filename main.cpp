@@ -1,15 +1,9 @@
 // ================= main.cpp =================
 #include "runtime.h"
-#include <iostream>
+#include "fib.h"
 
 int main() {
-  DAG dag;
-  std::vector<Task *> owned;
-  std::vector<std::unique_ptr<Task>> arena;
-  auto root = build_fib_dag(12, arena);
-  owned.push_back(std::move(root.first)); // owns the Task memory
-
-  Runtime rt(16);
-  rt.run(root.first);
+  Runtime<FibArgs, Worker<FibArgs, FuncType>> rt(8);
+  rt.run();
   return 0;
 }
