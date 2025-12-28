@@ -4,7 +4,30 @@
 #include <atomic>
 #include <condition_variable>
 #include <deque>
-#include <emmintrin.h>
+
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+  #include <emmintrin.h>
+  #define CPU_PAUSE() _mm_pause()
+  #define PREFETCH_READ(addr)  _mm_prefetch((char*)(addr), _MM_HINT_T0)
+  #define PREFETCH_WRITE(addr) _mm_prefetch((char*)(addr), _MM_HINT_T0)
+#elif defined(__aarch64__) || defined(_M_ARM64)
+  #include <arm_neon.h>
+  #define CPU_PAUSE() __builtin_arm_yield()
+  #define PREFETCH_READ(addr)  __builtin_prefetch(addr, 0, 3)
+  #define PREFETCH_WRITE(addr) __builtin_prefetch(addr, 1, 3)
+#else
+  #error "Unsupported architecture: this code requires x86 (emmintrin) or Apple ARM (arm_neon)"
+#endif
+
+#if defined(__APPLE__)
+  extern "C" {
+    #include <mach/thread_policy.h>
+    #include <mach/thread_act.h>
+  }
+#elif defined(__linux__)
+  #include <sched.h>
+#endif
+
 #include <functional>
 #include <iostream>
 #include <llvm/ADT/SmallVector.h>
@@ -25,7 +48,7 @@ struct alignas(64) SpinLock {
     for (;;) {
       // First: spin on shared reads
       while (locked.load(std::memory_order_relaxed)) {
-        _mm_pause();
+        CPU_PAUSE();
       }
       // Then: attempt to acquire
       if (!locked.exchange(true, std::memory_order_acquire)) {
@@ -294,7 +317,7 @@ __attribute__((always_inline)) __attribute__((hot))
     task->setValue(slot, val);
     if(!task->expectLastProducer){
 	if (task->remainingInputs.fetch_sub(1, std::memory_order_relaxed) == 1) {
-  	_mm_prefetch(&readyQueue, _MM_HINT_T0);		    		    		    		    		
+			PREFETCH_READ(&readyQueue);
     	if(!readyQueue.isLocalQueueFull()){
 		readyQueue.local_push_back(task);
 		return;
@@ -311,7 +334,7 @@ __attribute__((always_inline)) __attribute__((hot))
 		return;
 	}
     	else {
-      	 _mm_prefetch(&readyQueue, _MM_HINT_T0);		    		    		    		    		
+				PREFETCH_READ(&readyQueue);
     	 if(!readyQueue.isLocalQueueFull()){
 		readyQueue.local_push_back(task);
     		return;
@@ -329,7 +352,7 @@ __attribute__((always_inline)) __attribute__((hot))
   void inline writeSyncDataToFrameImpl(Task *task, int slot, int val) {
     task->setValue(slot, val);
 	if (task->remainingInputs.fetch_sub(1, std::memory_order_relaxed) == 1) {
-  	_mm_prefetch(&readyQueue, _MM_HINT_T0);		    		    		    		    		
+			PREFETCH_READ(&readyQueue);
     	if(!readyQueue.isLocalQueueFull()){
 		readyQueue.local_push_back(task);
 		return;
@@ -346,15 +369,15 @@ __attribute__((always_inline)) __attribute__((hot))
   void inline writeAddressToFrameImpl(Task *task, int slot, Task *val, bool enqueueLocally) {
     task->address = val;
     if (task->remainingInputs.fetch_sub(1, std::memory_order_relaxed) == 1) {
-  	_mm_prefetch(&readyQueue, _MM_HINT_T0);		    		    		    		    		
+      PREFETCH_READ(&readyQueue);
     	if(enqueueLocally && !readyQueue.isLocalQueueFull()){
-		readyQueue.local_push_back(task);
-    		return;
-    	}
-    	waitQueueMutex.lock();
-	readyQueue.steal_push_back(task);
-        waitQueueMutex.unlock();
+        readyQueue.local_push_back(task);
         return;
+      }
+      waitQueueMutex.lock();
+      readyQueue.steal_push_back(task);
+      waitQueueMutex.unlock();
+      return;
     }
   }
   
@@ -376,14 +399,14 @@ __attribute__((always_inline)) __attribute__((hot))
   */
   
 inline Task* executeLocalTask() {
-   if(!readyQueue.isLocalQueueEmpty()){
-   	auto task = readyQueue.local_pop_back();
-   	return task;
-   }
-   waitQueueMutex.lock();   
-   Task *t = readyQueue.steal_pop_back();
-   waitQueueMutex.unlock();  
-   return t;
+  if(!readyQueue.isLocalQueueEmpty()){
+    auto task = readyQueue.local_pop_back();
+    return task;
+  }
+  waitQueueMutex.lock();
+  Task *t = readyQueue.steal_pop_back();
+  waitQueueMutex.unlock();
+  return t;
 }
 
 inline std::vector<Task*> stealRemoteTasks(int id, int num){
@@ -403,11 +426,11 @@ inline std::vector<Task*> stealRemoteTasks(int id, int num){
 }
 
 inline Task* stealRemoteTask(int id) {
-    workers[id]->waitQueueMutex.lock();       
-    Task* frameId =  workers[id]->readyQueue.steal_pop_front();
-     workers[id]->waitQueueMutex.unlock();         
-    return frameId;
-  }
+	workers[id]->waitQueueMutex.lock();       
+	Task* frameId =  workers[id]->readyQueue.steal_pop_front();
+	workers[id]->waitQueueMutex.unlock();
+	return frameId;
+}
 
   __attribute__((hot, flatten)) void workerLoop() {
     while (true) {
@@ -442,8 +465,8 @@ inline Task* stealRemoteTask(int id) {
         int numthreads = workers.size();
         for (int i = 0; i  < numthreads; i++) {
        	   if(i != workerId){
-          	_mm_prefetch(&workers[i]->waitQueueMutex, _MM_HINT_T0);
-	          _mm_prefetch(&workers[i]->readyQueue, _MM_HINT_T0);     	
+	          PREFETCH_READ(&workers[i]->waitQueueMutex);
+  	        PREFETCH_READ(&workers[i]->readyQueue);
         	  tasks = stealRemoteTasks(i, 8*m);
 		  if(!tasks.empty()) {
 		  	break;
@@ -501,17 +524,33 @@ inline Task* stealRemoteTask(int id) {
       }
     }
 
-  void start() {
-    thread = std::thread(&Worker::workerLoop, this);
+  bool set_cpu_affinity(std::thread& t, int cpu) {
+#ifdef __linux__
     cpu_set_t cpuset;
     CPU_ZERO(&cpuset);
-    CPU_SET(workerId, &cpuset);
+    CPU_SET(cpu, &cpuset);
+    int r = pthread_setaffinity_np(t.native_handle(), sizeof(cpu_set_t), &cpuset);
+    return r == 0;
+#elif defined(__APPLE__)
+    thread_affinity_policy_data_t policy = { cpu };
+    // Convert pthread to Mach thread port
+    thread_port_t mach_thread = pthread_mach_thread_np(t.native_handle());
+    // set thread policy
+    kern_return_t r = thread_policy_set(mach_thread,
+                                        THREAD_AFFINITY_POLICY,
+                                        (thread_policy_t)&policy,
+                                        THREAD_AFFINITY_POLICY_COUNT);
+    return r == KERN_SUCCESS;
+#else
+    // Not supported on this platform
+    return false;
+#endif
+  }
 
-    int r = pthread_setaffinity_np(thread.native_handle(), sizeof(cpu_set_t),
-                                   &cpuset);
-    if (r != 0) {
+  void start() {
+    thread = std::thread(&Worker::workerLoop, this);
+    if (!set_cpu_affinity(thread, workerId))
       perror("pthread_setaffinity_np");
-    }
   }
 };
 
