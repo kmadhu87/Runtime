@@ -5,7 +5,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_COMPILER clang++-20)
 
 # Generate assembly + keep normal build products
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -fvectorize -march=native -flto -O3 -march=native -mtune=native -fno-exceptions -fno-rtti -fopenmp-simd")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O0 -g -fno-exceptions -fno-rtti -fopenmp-simd")
 
 include_directories(include)
 
@@ -15,7 +15,7 @@ find_package(PkgConfig REQUIRED)
 include_directories(${LLVM_INCLUDE_DIR})
 
 add_executable(runtime
-    main.cpp
+    test_attention.cpp
 )
 
 #target_include_directories(runtime PRIVATE ${GPERFTOOLS_INCLUDE_DIRS})
