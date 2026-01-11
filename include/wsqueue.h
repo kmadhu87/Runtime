@@ -23,6 +23,7 @@
   extern "C" {
     #include <mach/thread_policy.h>
     #include <mach/thread_act.h>
+    #include <mach/mach_error.h>
   }
 #elif defined(__linux__)
   #include <sched.h>
@@ -530,6 +531,8 @@ inline Task* stealRemoteTask(int id) {
     CPU_ZERO(&cpuset);
     CPU_SET(cpu, &cpuset);
     int r = pthread_setaffinity_np(t.native_handle(), sizeof(cpu_set_t), &cpuset);
+    if (r != 0)
+      perror("set_affinity failed", r);
     return r == 0;
 #elif defined(__APPLE__)
     thread_affinity_policy_data_t policy = { cpu };
@@ -540,6 +543,12 @@ inline Task* stealRemoteTask(int id) {
                                         THREAD_AFFINITY_POLICY,
                                         (thread_policy_t)&policy,
                                         THREAD_AFFINITY_POLICY_COUNT);
+    if (r != KERN_SUCCESS) {
+        std::cerr << "thread_policy_set failed: "
+                  << mach_error_string(r)
+                  << " (code: " << r << ")"
+                  << std::endl;
+    }
     return r == KERN_SUCCESS;
 #else
     // Not supported on this platform
@@ -549,8 +558,10 @@ inline Task* stealRemoteTask(int id) {
 
   void start() {
     thread = std::thread(&Worker::workerLoop, this);
-    if (!set_cpu_affinity(thread, workerId))
-      perror("pthread_setaffinity_np");
+    if (!set_cpu_affinity(thread, workerId)) {
+      std::cerr << "Warning: Failed to set CPU affinity for worker "
+                << workerId << std::endl << std::endl;
+		}
   }
 };
 
