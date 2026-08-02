@@ -30,7 +30,7 @@ void __attribute__((hot)) __attribute__((preserve_none)) __attribute__((always_i
 			createNewSpawnFrameAndWriteArgsAndLaunch(left - 1, syncTaskId, 0);
 		}
 		else {
-  		    _mm_prefetch(&address->args, _MM_HINT_T0);		    		    		    		    
+			PREFETCH_READ(&address->args);            
 		    __builtin_prefetch(&address->remainingInputs, 1, 3);
 		    writeDataToFrameImpl(address, slot, left, lastProducer);
 		}
